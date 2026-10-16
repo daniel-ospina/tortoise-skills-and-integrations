@@ -7,7 +7,7 @@ status: live
 tags: [tortoise, graph, decision, epistemology, ep-confidence]
 summary: "The core decision workflow on the Tortoise graph — options/criteria/findings → IMPL/NAND/mitigation edges → EP confidence ranking. Tool-based (MCP) so it runs against hosted tenants; graph-scripts/decide.py is the self-host variant."
 created: 2026-08-23
-updated: 2026-08-23
+updated: 2026-10-11
 allowed-tools: read write bash grep
 ---
 
@@ -22,9 +22,10 @@ evidence lands.
 
 ## Which Tortoise are you on?
 
-- **Hosted (cloud):** your agent uses the Tortoise MCP tools (`tortoise_*`),
-  configured via `claude mcp add tortoise` / the `.mcp.json` snippet pointing
-  at `https://api.premiselabs.co/mcp/` with your API key.
+- **Hosted (cloud):** your agent uses the Tortoise MCP tools (`tortoise_*`).
+  If you installed the skills via the onboarding wizard, the MCP server is
+  already wired. Configuring it by hand? Use the equivalent project-scoped
+  `.mcp.json` entry: `{"type": "http", "url": "https://api.premiselabs.co/mcp/", "headers": {"Authorization": "Bearer ${TORTOISE_API_KEY}"}}` — that file is **committable**, so it carries the env reference, never the key. A project-scope server stays **⏸ Pending approval** until you approve it once — start `claude` in the project and allow the prompt, or run `/mcp`.
 - **Self-hosted:** your agent uses the same `tortoise_*` MCP tools against a
   local MCP server pointed at your own FalkorDB, or runs
   `graph-scripts/decide.py` / the Python SDK directly.
@@ -39,8 +40,10 @@ audiences. The script variant is at the end.
    right before anything else — the user owns the option set.
 2. **Research options and criteria.** What are the candidate options? What
    criteria will they be judged on? What findings (evidence) are relevant?
-   (For deep research, pair with the `research` skill; new findings land on
-   the graph and connect to the decision.)
+   (For deep research, run the **`research-domain`** loop — broad research →
+   mine into the graph → UC2 gaps → re-research the gaps. It is the loop this
+   decision's evidence comes from; a shallow pass here is what leaves an
+   option ranked on one uncited claim.)
 3. **Check with the user:** list the criteria (for value) + the options (for
    completeness) — confirm before wiring edges.
 4. **Connect criteria → options.** For each criterion that supports or
@@ -66,8 +69,22 @@ Use the Tortoise MCP tools (no local FalkorDB needed for hosted tenants; self-ho
 1. **Create the nodes** — `tortoise_create_point` per point (dedup by
    content): options → `pointKind: option`, criteria → `criterion`,
    findings → `evidence`; keep ids stable (`opt:a`, `crit:1`, `finding:1`).
+   Decision parts are born LIVE with an explicit starting belief (#2199):
+   omit `credibility` for the system starting belief (medium = Beta(3,1),
+   provenance `system-default`, visible in `tortoise_calibrate_summary`), or
+   pass `credibility="high|medium|low"` (ladder gold/high/medium/low/
+   unverified) when you have a real belief — recorded `set-by-author`. There
+   is NO promote/calibrate step in this workflow: the documented flow ranks
+   on the first try.
 2. **Wire the edges** — `tortoise_create_operator` for each IMPL/NAND;
-   mitigation strength in `[0.10, 0.50]` for relevance edges.
+   mitigation strength in `[0.10, 0.50]` for relevance edges (0.50 = strongest
+   dampening — single source: `tortoise/weights.py` module docstring, #2315).
+   `strength` is the graded DAMPENER of the operator's effective EP weight:
+   `w_eff = w * (1 - strength)` — a 0.30 mitigation keeps 70% of the weight,
+   0.50 keeps 50%; dampened, never refuted. It is NOT how true the reason is
+   and is NOT fused into any prior (the mitigation POINT's own belief is
+   calibrated like any decision part). EP reads `mitigation_strength` via
+   `compute_operator_weight`.
 3. **Compute** — `tortoise_compute_confidence` (EP belief propagation on the
    decision subgraph) → the per-option confidence.
 4. **Sanity** — `tortoise_check_structure` before presenting (the graph must
@@ -82,6 +99,32 @@ Options ranked by EP confidence:
   2. opt:b  — <confidence> — top reasons: <edges>
 Mitigations applied: <n> (relevance-adjusted operators)
 ```
+
+## Researching the decision (`research-domain`)
+
+A decision is only as good as the evidence wired into it. When step 2 needs real
+research rather than the user's own knowledge, run the **`research-domain`** loop
+and let it drive the evidence set:
+
+```text
+research(broad) → mine → UC2 gaps → research(gaps) → mine → repeat
+```
+
+The control signal is `tortoise_recall(mode="gaps", query=<decision label>)` —
+the graph's UC2 query for claims that are **load-bearing but under-supported**
+(`load / (1 + support)`, where load is outgoing IMPL + NAND and support is
+incoming IMPL + `extractedFrom` Source edges). Each cycle sends the next research
+round at exactly the options and criteria the graph cannot yet justify; the loop
+stops on convergence or at the cycle budget (default 3). Two consequences for
+this workflow:
+
+- Run the loop **before** step 5 hardens the mitigations. A criterion that is
+  load-bearing and unsourced is precisely what a mitigation pass otherwise papers
+  over — the criterion stays TRUE and stops mattering, so the missing evidence
+  never gets filed.
+- The open-gaps list is the honest answer to "why is this option ranked where it
+  is?". Present it alongside the ranking, so low confidence reads as *unresolved
+  evidence* rather than as disagreement.
 
 ## Self-host variant
 

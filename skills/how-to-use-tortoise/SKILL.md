@@ -23,7 +23,7 @@ The graph-write operations in this skill are identical for every Tortoise deploy
 
 ### Hosted (cloud)
 
-Your agent reaches the graph through the Tortoise **MCP server** at `https://api.premiselabs.co/mcp/`, authenticated with a Bearer API key (`TORTOISE_API_KEY`). If you installed the skills via the onboarding wizard, the MCP server is already wired — `claude mcp add tortoise` (or the `.mcp.json` snippet: `{"type": "http", "url": "https://api.premiselabs.co/mcp/", "headers": {"Authorization": "Bearer ${TORTOISE_API_KEY}"}}`). Every operation below maps to a `tortoise_*` MCP tool. No local database, SDK, `.env`, or graph-scripts.
+Your agent reaches the graph through the Tortoise **MCP server** at `https://api.premiselabs.co/mcp/`, authenticated with a Bearer API key (`TORTOISE_API_KEY`). If you installed the skills via the onboarding wizard, the MCP server is already wired. Configuring it by hand? Use the equivalent project-scoped `.mcp.json` entry: `{"type": "http", "url": "https://api.premiselabs.co/mcp/", "headers": {"Authorization": "Bearer ${TORTOISE_API_KEY}"}}` — that file is **committable**, so it carries the env reference, never the key. A project-scope server stays **⏸ Pending approval** until you approve it once — start `claude` in the project and allow the prompt, or run `/mcp`. Every operation below maps to a `tortoise_*` MCP tool. No local database, SDK, `.env`, or graph-scripts.
 
 ### Self-hosted
 
@@ -49,6 +49,7 @@ The write operations appear once in this skill (by operation name). Invoke them 
 ## Hard Gate
 
 **Any graph write** (create_point, create_operator, mitigate_operator, supersede_point, delete_point, annotate_point, invalidate_point) **MUST** go through this skill. Bypassing it risks:
+
 - EP weights nuked by batch-connected mitigations
 - Orphaned NAND edges with no cleanup
 - Superseded operators with active edges still propagating
@@ -80,10 +81,26 @@ When a claim faces challenge, you have two tools. They address different things:
 |---|------|-------------|
 | **What it says** | "This claim is FALSE" | "This claim is TRUE but matters LESS than it seems" |
 | **Dimension** | Correctness | Relevance |
-| **Effect on EP** | Contradiction propagates through graph | Confidence reduction on the edge |
+| **Effect on EP** | Contradiction propagates through graph | Dampens the operator's weight: `w_eff = w × (1 − strength)` (#2315) |
 | **Applies to** | The argument Point directly | The operator (IMPL connection) between argument and what it supports |
 
 **The golden rule:** Relevance lives on the OPERATOR, truth lives on the POINT.
+
+> **Mitigation semantics (single source: `tortoise/weights.py` module
+> docstring, #2315):** `strength` is the graded DAMPENER of the operator's
+> effective EP weight — sanctioned band 0.10–0.50, formula
+> `w_eff = w × (1 − strength)`: a 0.30 mitigation keeps 70% of the operator's
+> weight; 0.50 keeps 50% — dampened, never refuted (a mitigated NAND stays a
+> contradiction, only weaker). EP reads `mitigation_strength` via
+> `compute_operator_weight` — it is NOT advisory metadata. It is NOT a
+> statement of how true the reason is, and it is NOT fused into the
+> mitigation point's belief (that would invert the meaning).
+> Decision parts filed through the decide tooling are born LIVE with an
+> explicit starting belief (#2199): omit `credibility=` for the system
+> starting belief medium = Beta(3,1) (provenance `system-default`), or pass
+> `credibility="high|medium|low"` (ladder gold/high/medium/low/unverified)
+> for a `set-by-author` belief. The documented decide flow ranks on the first
+> attempt — no promote/calibrate chores, no CalibrationError.
 
 - An option IS an option (it's true that it's a candidate); a criterion IS a criterion — **never NAND an option or criterion for being a bad fit.** A bad fit is a relevance problem, not a truth problem.
 - If a FINDING is factually untrue → NAND the finding Point directly (truth attack).
@@ -139,6 +156,7 @@ A decision's criteria shouldn't float. They should trace back to who needs them 
 Each link is an IMPL connection. The specific pointKinds in the chain depend on the expansion packs loaded. Load the packs, check their registered kinds and relations, and wire the chain accordingly.
 
 The chain is auditable in both directions:
+
 - **Downward:** "which customer need does this criterion serve?" → traverse IMPL up
 - **Upward:** "which decisions does this requirement drive?" → traverse IMPL down
 
@@ -147,6 +165,7 @@ An agent auditing an ADR can walk the full chain: understand not just what was d
 ## Supersession
 
 When superseding a point:
+
 1. Create the new point with updated content
 2. Call `supersede_point(old_id, new_id)` — this cleans up edges (hosted: `tortoise_supersede`; self-hosted: `sdk.supersede_point`)
 3. Verify old point's edges are properly transferred
@@ -265,6 +284,7 @@ for pid, confidence in ranked:
 ## Link-Before-Create Rule
 
 Before creating a new evidence point, search whether it already exists:
+
 - Use `tortoise_search` with the evidence claim as query (self-hosted SDK: `sdk.tortoise_fts_query`)
 - Use `create_point` with `dedup=True` (idempotent — returns existing if content matches)
 - This prevents duplicate evidence points that fragment EP propagation
@@ -274,16 +294,19 @@ Before creating a new evidence point, search whether it already exists:
 These run against a local FalkorDB via the SDK — the self-hosted path. Hosted tenants run the identical pattern with the MCP tools (`tortoise_create_point` → `tortoise_create_operator` → `tortoise_compute_confidence`); the scripts are reference implementations of the flow, not a hosted requirement.
 
 ### `graph-scripts/file_pricing_decision.py`
-Compares Pro/Team pricing options ($29/$49/$79) using criteria (competitor positioning, conversion rate, ARPU) and findings (devtool sweetspot, OSS conversion rates). Wires IMPL to chosen options, NAND to rejected ones. EP computes per-option confidence.
+
+Compares Pro/Team pricing options ($29/$49/$79) using criteria (competitor positioning, conversion rate, ARPU) and findings (devtool sweetspot, OSS conversion rates). Wires IMPL to chosen options, NAND to rejected ones. EP computes per-option confidence. **⚠️ Superseded prices — this is a worked example of the flow, not our price list.** The decided tiers are **free $0 · solo $9 · pro $25 · team $149** in the tortoise repo's `product/pricing.json` (`owner_confirmed: 2026-08-07`).
 
 ### `graph-scripts/decide_licensing.py`
+
 Compares 3 license options (AGPLv3-dual, BSL+AGPL, SSPL) using 7 criteria and 20+ findings. Full pattern: criteria → options → findings → edges → compute_confidence → ranked output. Run as:
 
 ```bash
-TORTOISE_DB_URI=docker://:@localhost:16379/tortoise python3 graph-scripts/decide_licensing.py
+TORTOISE_DB_URI=docker://:falkordb@localhost:6379/tortoise uv run python graph-scripts/decide_licensing.py
 ```
 
 ### `graph-scripts/decide.py`
+
 Generic decision comparison tool — accepts criteria/options/findings as structured input (`--input file.json|yaml` with the full decision definition, or `--options/--criteria/--findings/--edges` JSON on the CLI) and automates the create→wire→compute→rank pipeline. This is the self-host variant documented in the `tortoise-decide` skill; follow the pattern above if you're driving the SDK directly.
 
 ## Decision Comparison Checklist
@@ -334,6 +357,7 @@ Every search result includes an `ep` object with:
 | `contention` | Ratio of NAND to total — how disputed the claim is | 0.0–1.0 |
 
 **Interpreting confidence:**
+
 - 0.50 mean + low total evidence (total < 5) = **uncertainty** — not enough data yet
 - 0.50 mean + high total evidence (total > 10) + high contention (> 0.3) = **disagreement** — strong opposing views
 - 0.85 mean + high total evidence = **settled** — strong supporting evidence
@@ -384,23 +408,38 @@ A 500ms timeout caps all strategies. If all FalkorDB strategies fail, the system
 
 ## Creating Relationships with Semantic Labels
 
-When connecting Points with operators, use the `label` parameter to add domain context. **Direction is an explicit flag, not derived from the label** (ONTOLOGY v3.1 §3.1, §8 — #189):
+A relationship has **three layers** (ONTOLOGY §8): the **mechanism** (`IMPL` / `NAND`) and the
+**direction** it records; the **semantics** (the meaning vocabulary); and the **predicate** — the
+specific verb, which is the `label` parameter. **Declare the meaning and the write path resolves the
+direction** — the model's chain step that used to have no way to run (#7852 W1):
 
-| Semantic Type | Mechanism | Typical Direction | When to Use |
+| semantics (Layer 2) | mechanism | resolves to | When to Use |
 |--------------|-----------|-------------------|-------------|
-| **hasPart** | IMPL | bidirectional (parts↔whole) | Composition — "Epic hasPart Issue", "Product hasPart Feature" |
 | **addresses** | IMPL | unidirectional (A→B) | "Feature addresses Need", "Task implements Feature" |
-| **opposes** | NAND | unidirectional (A→B) | "Feature competesWith Competitor", "Issue blocks Issue" |
+| **supports** | IMPL | unidirectional (A→B) | Evidence bears on a claim |
+| **refutes** | NAND | unidirectional (A→B) | The directed attack — attacker's truth penalizes the target, no back-pressure |
+| **mutuallySupportive** | IMPL | bidirectional (A↔B) | Each reinforces the other |
+| **mutuallyExclusive** | NAND | bidirectional (A↔B) | "A and B can't both be true" — "Feature competesWith Competitor" |
+| **hasPart** | IMPL | bidirectional (parts↔whole) | Composition — "Epic hasPart Issue", "Product hasPart Feature" |
+| **related** / **transacts** | — | `-` in the model; the runtime records the caller/default direction | Neutral association. The model says no confidence transfers — but the runtime stores no `-` value yet, so the write path falls through and records `bidirectional` (unless you pass `direction=`). The four-value **storage** migration is the open half of #7852; for a genuinely transfer-free association use the plain (operator-less) `related` edge. |
 
-**Direction is explicit, not label-derived.** `create_operator(..., direction="bidirectional"|"unidirectional")` controls EP back-propagation: `bidirectional` (default) propagates both ways; `unidirectional` is source→target only. The `label` carries domain semantics only — EP reads `direction`, never the label. NAND defaults to bidirectional but also supports unidirectional. (Hosted: `tortoise_create_operator`; self-hosted: `sdk.create_operator`.)
+**`semantics` is resolved by the write path, and the basis it used is recorded** on the operator as
+`direction_basis` (`explicit` = the caller stated a non-default direction, `semantics` = the declared
+meaning resolved it, `default` = neither). An explicit non-default `direction=` still outranks the
+meaning; the signature default (`bidirectional`) does not. `label` is a **different input** — the
+Layer-3 predicate (the domain verb: `fixes`, `deploysTo`, `bearsOn`) — and it does not affect the
+direction. An unknown word **warns and the write proceeds** (warn-not-block, never refuses); a retired
+word (e.g. `opposes`) resolves to its canonical replacement. (Hosted: `tortoise_create_operator`;
+self-hosted: `sdk.create_operator`.)
 
 **Backward compatibility:** existing operators without a `direction` property default to bidirectional in EP (with a warning log). Self-hosted: run `graph-scripts/migrate_direction.py` to backfill `direction` on existing operators per their old semantics (NAND / hasPart / part-of → bidirectional; other IMPL → unidirectional). Hosted tenants do not run graph-scripts — the hosted API does not expose them.
 
 **Strength:** Set via `set_point_baseline(operator_id, alpha, beta)` (hosted: `tortoise_set_point_baseline`; self-hosted: `sdk.set_point_baseline`). High alpha = strong support. High beta = strong contradiction.
 
 ```python
-# Create a relationship with semantic context + explicit direction
-op = sdk.create_operator("IMPL", feature_id, [need_id], label="addresses", direction="unidirectional")
+# The meaning resolves the direction — no need to state it
+op = sdk.create_operator("IMPL", feature_id, [need_id],
+                         semantics="addresses", label="implements")
 sdk.set_point_baseline(op["id"], alpha=10, beta=1)  # strong support
 ```
 
@@ -444,7 +483,7 @@ sdk.expand_kind("WorkItem")  # returns ["dev:issue", "pm:task", ...]
 
 - [ ] Ran `list_pointkinds()` before creating new points — know what structural types exist
 - [ ] Ran `list_sources()` if the data has provenance — know where existing data came from
-- [ ] Used pack-registered kinds for new points (check `list_relations()` / `expand_kind()`) 
+- [ ] Used pack-registered kinds for new points (check `list_relations()` / `expand_kind()`)
 - [ ] For decision comparisons: collected option IDs in an anchors list for `compute_confidence(anchors=...)`
 
 ---
@@ -455,9 +494,11 @@ sdk.expand_kind("WorkItem")  # returns ["dev:issue", "pm:task", ...]
 
 **The DB target is explicit, never accidental, and local stays local.** A self-hosted/local instance is intentionally local — local tooling (MCP server, SDK, graph-scripts) targets the local FalkorDB, never a remote cloud DB. The **hosted version** is a separate product: the hosted API resolves `FALKORDB_CLOUD_URI` → `TORTOISE_DB_URI` via its entrypoint and refuses to start without it; clients reach it over HTTP with API keys.
 
+> **The committed repo-root `.mcp.json` defaults to the HOSTED endpoint and carries no DB URI.** Its `tortoise` entry is `{"type": "http", "url": "https://api.premiselabs.co/mcp/", "headers": {"Authorization": "Bearer ${TORTOISE_API_KEY}"}}` — the DB target is resolved **server-side** by the hosted API, and the entry has **no `env` block and no `TORTOISE_DB_URI` setting** (its `_comment` names the variable only to point at the self-hosted path below). The `TORTOISE_DB_URI` rules below describe the **self-hosted / stdio** path; to use them, point that entry's `url` back at your own daemon (`http://localhost:8000/mcp` — see `docs/quickstart-selfhosted.md`).
+
 | Source | URI resolution | Behavior when unset |
 |--------|----------------|---------------------|
-| **MCP server (local)** | `TORTOISE_DB_URI` in `.mcp.json` — defaults to local `docker://:@localhost:16379/tortoise`; a repo-root `.env` only fills keys `.mcp.json` does **not** set (useful for SDK scripts / direct launches — `.mcp.json` env always wins for the MCP server) | Fails loud on startup (exit 1) — never silently connects to an empty embedded graph (`TORTOISE_ALLOW_EMBEDDED=1` is the test-only escape hatch) |
+| **MCP server (self-hosted / stdio)** | `TORTOISE_DB_URI` on the **daemon's own environment** — a **stdio** `.mcp.json` entry sets it in its `env` block, and the compose daemon resolves it from its own env; a repo-root `.env` fills only the keys that entry does **not** set (useful for SDK scripts / direct launches — an entry's own `env` always wins). Canonical local form `docker://:falkordb@localhost:6379/tortoise` (compose publishes `127.0.0.1:6379`; `.env.example`) — code defaults still fall back to the legacy port `16379`, env-overridable | Fails loud on startup (exit 1) — never silently connects to an empty embedded graph (`TORTOISE_ALLOW_EMBEDDED=1` is the test-only escape hatch) |
 | **SDK / graph-scripts** | `os.environ["TORTOISE_DB_URI"]` (or `FalkorProjection.from_uri`) | Embedded redislite (dev/test only) |
 | **Hosted API** | `FALKORDB_CLOUD_URI` secret → `TORTOISE_DB_URI` via entrypoint | Refuses to start without it |
 
@@ -473,8 +514,9 @@ sdk.taxonomy()  # or tortoise_status() — returns point counts, pointKinds, gra
 ```
 
 Or via MCP:
+
 ```
-tortoise_summarize_structure  # returns {gateN_*, total}; zero total on an empty/wrong graph
+tortoise_summarize_structure  # returns {total, operators, gateN_*, gate_total}; zero total on an empty/wrong graph
 ```
 
 ## Common Failure Mode
@@ -487,14 +529,14 @@ Agent: "The graph has no licensing data. I'll create evidence from scratch."
        (files 20+ duplicate points on the wrong graph)
 ```
 
-**Fix:** point local tooling at the local FalkorDB. The default in `.mcp.json` is `docker://:@localhost:16379/tortoise` (the designated local container); override in the repo-root `.env` (gitignored — never commit credentials) if your local target differs.
+**Fix:** on a **self-hosted** setup, point local tooling at the local FalkorDB — set `TORTOISE_DB_URI` on the daemon / stdio entry, or in the repo-root `.env` (gitignored — never commit credentials). The committed repo-root `.mcp.json` does **not** carry this variable: it defaults to the *hosted* endpoint (see the note above), so a self-hosted agent must first point that entry's `url` at its own daemon.
 
 ```bash
-# .env (repo root, gitignored) — LOCAL target only
-TORTOISE_DB_URI=docker://:@localhost:16379/tortoise
+# .env (repo root, gitignored) — LOCAL target only, self-hosted/stdio path
+TORTOISE_DB_URI=docker://:falkordb@localhost:6379/tortoise
 ```
 
-Restart the MCP server after changing the URI — the connection is resolved once at startup. Do **not** point local tooling at the hosted (cloud) instance.
+Restart the MCP server after changing the URI — the connection is resolved once at startup. Do **not** point local tooling at the hosted (cloud) instance — the committed repo-root `.mcp.json` is the deliberate hosted default described above, not local tooling re-pointed at the cloud DB.
 
 ## Self-Hosted: SDK Props Convention
 
@@ -570,7 +612,7 @@ and terminal statuses too). The sanctioned promotion routes:
 - `promotion_policy="auto"` opts into #131 parity (source auto-promotion on
   first edge write) — the migration path from the old default.
 
-The response carries `warnings` (never fatal) — see the ELEVEN-key table.
+The response carries `warnings` (never fatal) — see the TWELVE-key table.
 
 ## Idempotent resubmission
 
@@ -594,9 +636,24 @@ by the retry (content+kind fallback scan), never duplicated.
 
 | Connection | Route | Result |
 |---|---|---|
-| Plain `operator: IMPL/NAND` | Direct edge (operator-less) | `{"direct_edge", "from", "to", "deduped"}` |
+| Plain `operator: IMPL/NAND` — **any endpoint is a plain `:Point`** | Operator point | `{"operator_id", "deduped"}` |
+| Plain `operator: IMPL/NAND` — **both endpoints non-Point** (e.g. `Object↔Object`) | Direct edge (operator-less) | `{"direct_edge", "from", "to", "deduped"}` |
 | `mitigation` / `reify: true` | Operator point | `{"operator_id", "deduped"}` |
 | `relation` | Structural edge | `{"relation", "from", "to", "deduped"}` |
+
+⛔ **Point↔Point relations are operator-mediated** (owner ruling 2026-10-13, tortoise #8499) — an
+operator-less edge carries no operator node, so it can be neither mitigated nor annotated, and it
+cannot carry the epistemic weighting a Point's relations claim. (Durability was the ruling's
+original third argument — plain direct edges were journaled but never replayed, so `rebuild_all`
+lost them — but #8499 landed the `DirectEdgeCreated` replay fold, so they survive a rebuild now
+too; the ruling does not rest on that argument any more.) The direct shape is reserved for
+`Object↔Object`, where no epistemic weighting is claimed. Write `reify: true` to say the operator
+route explicitly; a plain spelling that gets re-routed is reported as the `point_mediated_route`
+warning. Note `ingest`'s connection contract admits only plain `:Point` endpoints today (sole
+carve-out: an `Event` on the operator route), so in practice every plain `IMPL`/`NAND` in a bundle
+is operator-mediated and returns the bare operator-id string — the `{direct_edge, from, to}`
+descriptor is what `create_direct_edge` returns for an `Object↔Object` pair, while `create_edge`
+writes a *relation* edge (`{relation, from, to}`) instead.
 
 Multi-item `to` on a plain IMPL/NAND connection: use `reify:true` /
 mitigation (the operator route) or split into singular connections.
@@ -611,7 +668,7 @@ mitigation (the operator route) or split into singular connections.
   rejections — migrate via `reify:true` ×2 (the operator route preserves
   both labels).
 
-## Warnings — the ELEVEN keys (closed set)
+## Warnings — the TWELVE keys (closed set)
 
 `warnings` entries are key-prefixed strings. A key outside this table is a
 divergence — report it:
@@ -620,7 +677,8 @@ divergence — report it:
 · `mitigation_drift_duplicate` · `nfc_straddle_duplicate` ·
 `mitigation_strength_change` · `partial_operator_residue` ·
 `operator_absorb_completed` · `label_dropped_resubmit` ·
-`direction_dropped_resubmit` · `direction_changed_resubmit`
+`direction_dropped_resubmit` · `direction_changed_resubmit` ·
+`point_mediated_route`
 
 ## Query-back verification (J8 exit state)
 
