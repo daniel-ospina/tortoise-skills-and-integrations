@@ -20,6 +20,15 @@ curl -fsSL https://app.premiselabs.co/install-tortoise-skills.sh | bash -s -- --
 
 Replace `claude` with `codex`, `cursor`, or `pi` for other agents. Re-running the installer updates the skills in place.
 
+**There is no installer script in this repository, deliberately.** The URL above
+is served by the Tortoise product site, and the script's source of truth lives
+in the [`daniel-ospina/tortoise`](https://github.com/daniel-ospina/tortoise)
+repo (`website/apps/dashboard/public/install-tortoise-skills.sh`) — edit it
+there, never here ([#8747](https://github.com/daniel-ospina/tortoise/issues/8747)).
+A copy left in this repo goes stale: it did, and a customer who ran it got v1
+behaviour — replacing same-named skills from other sources with no backup and
+no merge.
+
 ### Manual install
 
 Clone this repo (or download the folders) and copy each skill into your agent's skills directory:
@@ -49,7 +58,7 @@ and a fail-closed parity gate in the Tortoise repo keeps the two byte-identical.
 | Artifact | Authored in | How it reaches a customer |
 |---|---|---|
 | the three skills under `skills/` | **this repo** | mirrored byte-for-byte into [`daniel-ospina/tortoise`](https://github.com/daniel-ospina/tortoise) at `website/apps/dashboard/public/skills/` and served at `app.premiselabs.co/skills/<name>/SKILL.md`. The pin is `config/served-skills-upstream.yml` in that repo; `tools/served_skills_parity.py --sync` re-derives the mirror ([#4643](https://github.com/daniel-ospina/tortoise/issues/4643)) |
-| `install-tortoise-skills.sh` | [`daniel-ospina/tortoise`](https://github.com/daniel-ospina/tortoise) → `website/apps/dashboard/public/install-tortoise-skills.sh` | install with the curl one-liner above. The copy in this repo is a stale leftover — its source of truth was deliberately moved out of here ([#3324](https://github.com/daniel-ospina/tortoise/issues/3324)); tracked by [#8747](https://github.com/daniel-ospina/tortoise/issues/8747) |
+| `install-tortoise-skills.sh` | [`daniel-ospina/tortoise`](https://github.com/daniel-ospina/tortoise) → `website/apps/dashboard/public/install-tortoise-skills.sh` | install with the curl one-liner above. **No copy lives in this repo** — the installer's source of truth was deliberately moved out of here ([#3324](https://github.com/daniel-ospina/tortoise/issues/3324)) and the stale v1 leftover was deleted ([#8747](https://github.com/daniel-ospina/tortoise/issues/8747)). Adding one back re-creates the drift |
 | `tortoise-onboarding` | `daniel-ospina/tortoise` → `tortoise/onboarding/SKILL.md` | served at `app.premiselabs.co/skills/tortoise-onboarding/SKILL.md`. It is a one-time setup flow delivered as instructions, **not** one of the three reusable capabilities, and never a skill this repo authors ([#4365](https://github.com/daniel-ospina/tortoise/issues/4365)) |
 
 **To change a skill:** edit it here, then — in the Tortoise repo — run
